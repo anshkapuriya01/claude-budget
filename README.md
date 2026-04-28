@@ -4,6 +4,8 @@ Token-budget-aware execution hooks for [Claude Code](https://www.claude.com/prod
 
 No API calls. No subscription. Pure heuristic estimation, runs entirely on your machine.
 
+## Make Sure that WSL is installed in your windows system.
+
 ## Install
 
 ```bash

@@ -4,12 +4,13 @@ Token-budget-aware execution hooks for [Claude Code](https://www.claude.com/prod
 
 No API calls. No subscription. Pure heuristic estimation, runs entirely on your machine.
 
-## Make Sure that WSL is installed in your windows system.
+## Make Sure that WSL is installed in your windows system .
 
 Run powershell as Administrator.
 ```powershell
 wsl --install
 ```
+
 
 ## Install
 
@@ -27,6 +28,26 @@ less install.sh
 bash install.sh
 ```
 
+## Check the Installation
+Restart Claude Code. In any project, send the verify prompt:
+
+Run:
+```
+ python --version && type %USERPROFILE%\.claude\settings.json
+```
+If you see Python 3.x and a settings.json with hooks pointing to python ~/.claude/hooks/..., you're live.
+
+
+## WSL Error
+wsl may write the files in linux home. To fix that you have to copy that files to windows using this command
+```
+wsl bash -c "mkdir -p /mnt/c/Users/kapur/.claude/hooks && cp ~/.claude/hooks/budget-estimator.py /mnt/c/Users/kapur/.claude/hooks/ && cp ~/.claude/hooks/budget-finalizer.py /mnt/c/Users/kapur/.claude/hooks/ && echo done"
+```
+
+The install also patched WSL's settings.json, not your Windows one. We need to update the Windows version. Run this in CMD:
+```
+wsl python3 -c "import json,os; p='/mnt/c/Users/kapur/.claude/settings.json'; s=json.load(open(p)) if os.path.exists(p) else {}; h=s.setdefault('hooks',{}); ups=h.setdefault('UserPromptSubmit',[]); ec='python3 ~/.claude/hooks/budget-estimator.py'; (ups.append({'hooks':[{'type':'command','command':ec,'timeout':5}]}) if not any(x.get('command')==ec for e in ups for x in e.get('hooks',[])) else None); st=h.setdefault('Stop',[]); fc='python3 ~/.claude/hooks/budget-finalizer.py'; (st.append({'hooks':[{'type':'command','command':fc,'timeout':5}]}) if not any(x.get('command')==fc for e in st for x in e.get('hooks',[])) else None); json.dump(s,open(p,'w'),indent=2); print('patched')"
+```
 ## Uninstall
 
 ```bash

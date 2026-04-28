@@ -1,6 +1,8 @@
 # claude-budget
 
-Token-budget-aware execution hooks for [Claude Code](https://www.claude.com/product/claude-code). When your context window crosses 90%, Claude is automatically instructed to trim scope, finish what it does take on at full quality, and write `plan.md` and `summary.md` to your project root before context runs out — so you have a clean handoff when you `/clear` and start fresh.
+Token-budget-aware execution hooks for [Claude Code](https://www.claude.com/product/claude-code). When your context window crosses 90%, Claude switches to **partial execution mode** — it breaks the request into discrete tasks, completes only as many as fit at full quality, and defers the rest into `plan.md` and `summary.md` (your project's persistent memory). Example: if you ask for 10 tasks and only 7 fit, Claude finishes 7 properly and records the remaining 3 as deferred so the next session can pick them up.
+
+A live progress bar also renders below the chat box, showing current context usage, remaining tokens, and how close you are to the 90% ceiling — green under 70%, yellow up to 90%, red beyond.
 
 No API calls. No subscription. Pure heuristic estimation, runs entirely on your machine.
 
@@ -56,12 +58,13 @@ curl -fsSL https://raw.githubusercontent.com/anshkapuriya01/claude-budget/main/u
 
 ## How it works
 
-Two hooks get installed in `~/.claude/hooks/`:
+Three scripts get installed in `~/.claude/hooks/`:
 
-- **`budget-estimator.py`** runs on every prompt you submit. It heuristically estimates the prompt's token cost (length + keyword scoring), reads your current context usage from Claude Code's session JSONL, and if the projected total exceeds 90% of the model's context window, prepends a budget reminder to your prompt instructing Claude to trim scope and reserve the last 10% for closing files.
-- **`budget-finalizer.py`** runs when Claude finishes responding. If the session was budget-flagged but `plan.md` or `summary.md` weren't written, it creates minimal stubs as a fallback.
+- **`budget-estimator.py`** runs on every prompt you submit. It heuristically estimates the prompt's token cost (length + keyword scoring), reads your current context usage from Claude Code's session JSONL, and if the projected total exceeds 90% of the model's context window, prepends a **partial-execution** reminder to your prompt. The reminder tells Claude to (1) enumerate the discrete tasks in your request, (2) execute only the subset that fits at full quality — never cram or compress to fit more — and (3) record the deferred tasks in `plan.md` (a checklist with `[x]` / `[ ]` markers) and `summary.md` (a dated session log). Both files are created if they don't exist and updated in place if they do, so they accumulate as the project's persistent memory across sessions.
+- **`budget-finalizer.py`** runs when Claude finishes responding. If the session was budget-flagged but `plan.md` or `summary.md` weren't written, it creates minimal stubs as a fallback so you're never left without a paper trail.
+- **`budget-statusline.py`** is wired into Claude Code's `statusLine` setting and renders a live progress bar below the chat box. After every turn it reads the latest usage from the session transcript and prints something like `budget ███████████░░░░░░░░░░░░ 47% │ 94k/200k tokens │ ~86k free until ceiling`. The bar shifts color (green → yellow → red) as you approach the 90% ceiling, so you can see room remaining at a glance. Install only sets `statusLine` if you don't already have a custom one configured.
 
-Both hooks are silent when you're under 90%. Zero overhead when not triggered.
+The estimator and finalizer are silent when you're under 90% — zero overhead when not triggered. The status line runs every turn but is cheap (just one transcript read + a print).
 
 ## Tuning
 

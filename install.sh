@@ -186,22 +186,32 @@ def main():
         f"Estimated cost of this request: ~{estimate:,} tokens.\n"
         f"Hard ceiling: {ceiling:,} tokens (90% of window).\n"
         f"Available before ceiling: ~{ceiling - current:,} tokens.\n\n"
+        f"PARTIAL EXECUTION MODE — do NOT attempt the full request.\n\n"
         f"Instructions for this turn:\n"
-        f"1. Do NOT compromise quality on whatever you do execute. Better to "
-        f"finish 60% of the work properly than 100% sloppily.\n"
-        f"2. Identify the highest-value subset of the user's request that fits "
-        f"in the available budget, leaving ~{context_max - ceiling:,} tokens "
-        f"(10% of window) free.\n"
-        f"3. Execute that subset to full quality.\n"
-        f"4. Before context fills, write/update two files in the project root "
-        f"({cwd}):\n"
-        f"   - plan.md: the original plan, marked with what's done and what "
-        f"remains. Create it if it doesn't exist.\n"
-        f"   - summary.md: a concise summary of what was accomplished this "
-        f"session, decisions made, and where to resume. Create it if it "
-        f"doesn't exist; append a new dated section if it does.\n"
-        f"5. Tell the user briefly that you trimmed scope due to budget and "
-        f"point them to plan.md/summary.md for the remainder.\n"
+        f"1. Break the user's request into discrete tasks. If they asked for "
+        f"10 things, enumerate those 10 tasks explicitly before doing any work.\n"
+        f"2. Estimate how many of those tasks fit in the available budget "
+        f"(~{ceiling - current:,} tokens), reserving ~{context_max - ceiling:,} "
+        f"tokens (10% of window) at the end for updating the history files.\n"
+        f"3. Execute ONLY the tasks that fit, at full quality. Skip the rest "
+        f"entirely — do NOT compress, rush, or cram to fit more in. Partial "
+        f"high-quality work beats complete sloppy work. Example: if 10 tasks "
+        f"were requested and only 7 fit, complete 7 properly and defer 3.\n"
+        f"4. Update two history files in the project root ({cwd}). These are "
+        f"how project memory persists across sessions — write them as if a "
+        f"fresh Claude with no other context will read them next time:\n"
+        f"   - plan.md: a checklist of every task for the project. If the "
+        f"file does not exist, create it and seed it with the full task list "
+        f"from this request. Mark completed tasks with [x] and "
+        f"deferred/pending tasks with [ ]. Annotate deferred tasks like "
+        f"'(deferred YYYY-MM-DD — budget)' so the reason is preserved.\n"
+        f"   - summary.md: a running history of project sessions. If the "
+        f"file does not exist, create it. Append a new dated section "
+        f"describing what was completed this session, what was deferred and "
+        f"why, key decisions made, and where to resume next session.\n"
+        f"5. End your reply by telling the user: how many tasks you "
+        f"completed, how many you deferred, and that plan.md / summary.md "
+        f"hold the remainder for next session.\n"
     )
 
     # Claude Code reads `additionalContext` from UserPromptSubmit hook output
@@ -260,12 +270,16 @@ def main():
             with open(plan_path, "w") as f:
                 f.write(
                     f"# Plan\n\n"
-                    f"_Auto-stub created {timestamp} because session ended "
-                    f"under budget pressure and no plan.md was written._\n\n"
-                    f"## Status\nUnknown — Claude did not record plan state "
-                    f"before the session ended.\n\n"
-                    f"## Next steps\nReview summary.md and the conversation "
-                    f"transcript to reconstruct remaining work.\n"
+                    f"_Auto-stub created {timestamp} because the session ended "
+                    f"under budget pressure without plan.md being written._\n\n"
+                    f"## Tasks\n"
+                    f"- [ ] (unknown) — reconstruct deferred tasks from the "
+                    f"conversation transcript and summary.md\n\n"
+                    f"## Notes\n"
+                    f"Future sessions should keep this file as a checklist: "
+                    f"mark completed tasks with [x], pending or deferred tasks "
+                    f"with [ ], and annotate deferrals with the date and "
+                    f"reason (e.g. '(deferred 2026-04-28 — budget)').\n"
                 )
             notes.append("created stub plan.md")
         except Exception:
@@ -310,6 +324,121 @@ if __name__ == "__main__":
 PYEOF
 chmod +x ~/.claude/hooks/budget-finalizer.py
 
+# ── budget-statusline.py (Claude Code status line) ──────────────────────────
+# Renders a colored progress bar below the chat box showing current context
+# usage vs the model's context window. Re-runs after every turn, so the bar
+# updates live as the session grows. Color shifts green → yellow → red as
+# usage approaches the 90% ceiling, and the right side shows raw token
+# counts and ~tokens free until the ceiling.
+cat > ~/.claude/hooks/budget-statusline.py << 'PYEOF'
+#!/usr/bin/env python3
+"""Live token-budget progress bar for Claude Code's status line."""
+import json, os, sys
+
+MODEL_CONTEXT = {
+    "claude-sonnet-4-6[1m]":     1_000_000,
+    "claude-opus-4-7":           1_000_000,
+    "claude-sonnet-4-6":           200_000,
+    "claude-haiku-4-5-20251001":   200_000,
+    "claude-haiku-4-5":            200_000,
+}
+
+BUDGET_CEILING_PCT = 0.90
+BAR_WIDTH = 24
+
+RESET  = "\033[0m"
+DIM    = "\033[2m"
+BOLD   = "\033[1m"
+GREEN  = "\033[32m"
+YELLOW = "\033[33m"
+RED    = "\033[31m"
+
+def read_transcript_usage(transcript_path):
+    """Return (current_tokens, model) from the latest assistant turn."""
+    if not transcript_path or not os.path.exists(transcript_path):
+        return 0, None
+    last_usage, last_model = None, None
+    try:
+        with open(transcript_path) as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                    if d.get("type") == "assistant":
+                        msg = d.get("message", {})
+                        usage = msg.get("usage", {})
+                        if usage:
+                            last_usage = usage
+                            last_model = msg.get("model") or last_model
+                except Exception:
+                    pass
+    except Exception:
+        return 0, None
+    if not last_usage:
+        return 0, last_model
+    total = (
+        last_usage.get("input_tokens", 0)
+        + last_usage.get("cache_read_input_tokens", 0)
+        + last_usage.get("cache_creation_input_tokens", 0)
+    )
+    return total, last_model
+
+def fmt(n):
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.0f}k"
+    return str(n)
+
+def main():
+    try:
+        data = json.load(sys.stdin)
+    except Exception:
+        sys.exit(0)
+
+    transcript = data.get("transcript_path", "") or ""
+    model_id = (data.get("model") or {}).get("id") \
+               or os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7")
+
+    current, recorded = read_transcript_usage(transcript)
+    model_id = recorded or model_id
+    ctx_max = MODEL_CONTEXT.get(model_id, 200_000)
+    ceiling = int(ctx_max * BUDGET_CEILING_PCT)
+
+    pct = (current / ctx_max) if ctx_max else 0.0
+    pct = min(pct, 1.0)
+    pct_int = int(pct * 100)
+
+    if pct < 0.70:
+        color = GREEN
+    elif pct < BUDGET_CEILING_PCT:
+        color = YELLOW
+    else:
+        color = RED
+
+    filled = int(round(pct * BAR_WIDTH))
+    if filled > BAR_WIDTH:
+        filled = BAR_WIDTH
+    bar = (color + "█" * filled + RESET
+           + DIM + "░" * (BAR_WIDTH - filled) + RESET)
+
+    free = max(0, ceiling - current)
+    free_label = "free until ceiling" if pct < BUDGET_CEILING_PCT else "OVER ceiling"
+
+    out = (
+        f"budget {bar} "
+        f"{BOLD}{color}{pct_int}%{RESET} "
+        f"{DIM}|{RESET} "
+        f"{fmt(current)}/{fmt(ctx_max)} tokens "
+        f"{DIM}|{RESET} "
+        f"{color}~{fmt(free)} {free_label}{RESET}"
+    )
+    print(out)
+
+if __name__ == "__main__":
+    main()
+PYEOF
+chmod +x ~/.claude/hooks/budget-statusline.py
+
 # ── settings.json patch ─────────────────────────────────────────────────────
 # Idempotent: appends our hooks without clobbering existing ones (e.g. headroom).
 python3 << 'EOF'
@@ -344,6 +473,20 @@ if not any(h.get("command") == finalizer_cmd
         "hooks": [{"type": "command", "command": finalizer_cmd, "timeout": 5}]
     })
 
+# statusLine: live budget progress bar below the chat box.
+# Only install if no custom statusLine is configured, or if an earlier
+# version of ours is already there (so reruns refresh the command path).
+sl_cmd = "python3 ~/.claude/hooks/budget-statusline.py"
+existing_sl = settings.get("statusLine")
+if (not isinstance(existing_sl, dict)
+        or not existing_sl.get("command")
+        or "budget-statusline.py" in existing_sl.get("command", "")):
+    settings["statusLine"] = {
+        "type": "command",
+        "command": sl_cmd,
+        "padding": 0,
+    }
+
 tmp = path + ".tmp"
 with open(tmp, "w") as f:
     json.dump(settings, f, indent=2)
@@ -352,6 +495,7 @@ EOF
 
 echo -e "  ${GREEN}✓${RESET} budget-estimator.py → ~/.claude/hooks/"
 echo -e "  ${GREEN}✓${RESET} budget-finalizer.py → ~/.claude/hooks/"
+echo -e "  ${GREEN}✓${RESET} budget-statusline.py → ~/.claude/hooks/"
 echo -e "  ${GREEN}✓${RESET} settings.json patched"
 echo ""
 echo -e "Restart Claude Code to activate."

@@ -2,12 +2,17 @@
 
 Token-budget-aware helper hooks for Claude Code.
 
-This project does two things:
+This project does three things:
 
 - Adds budget guidance to a prompt when the next turn is estimated to push the current context above 90%.
 - Shows a live status line with current context usage, token counts, and remaining room before the 90% ceiling.
+- Shows Claude Code rate-limit usage when Claude Code provides `rate_limits` data to the status line.
 
 The hooks do not make API calls and do not enforce behavior outside Claude Code. The estimator can add context that asks Claude to do partial execution and maintain `plan.md` / `summary.md`; Claude still performs the work through its normal model behavior.
+
+## Preview
+
+![claude-budget status line preview](assets/statusline-preview.png)
 
 ## Install
 
@@ -28,6 +33,28 @@ bash install.sh
 ```
 
 The installer looks for a Python 3 command in this order: `python3`, `python`, then `py`. It writes the command that worked into `~/.claude/settings.json`, so Windows installs do not depend on `python3` being on PATH.
+
+## Windows With WSL Bash
+
+On Windows, `bash` may point to WSL:
+
+```cmd
+where bash
+```
+
+If it prints a path like this:
+
+```text
+C:\Users\<you>\AppData\Local\Microsoft\WindowsApps\bash.exe
+```
+
+then plain `bash install.sh` writes into the Linux home directory, not the Windows Claude Code folder. Use this from Command Prompt instead:
+
+```cmd
+bash -lc "curl -fsSL https://raw.githubusercontent.com/anshkapuriya01/claude-budget/main/install.sh -o /tmp/claude-budget-install.sh && HOME=/mnt/c/Users/%USERNAME% bash /tmp/claude-budget-install.sh"
+```
+
+Then restart Claude Code.
 
 ## Verify
 
@@ -86,23 +113,26 @@ Three scripts get installed in `~/.claude/hooks/`:
 
 - `budget-estimator.py` runs on `UserPromptSubmit`. It estimates prompt cost from prompt length and scope keywords, reads current usage from Claude Code's JSONL transcript, and injects partial-execution guidance only when projected usage exceeds 90%.
 - `budget-finalizer.py` runs on `Stop`. If a budget flag was set and `plan.md` or `summary.md` were not created, it writes minimal fallback stubs.
-- `budget-statusline.py` is configured as Claude Code's `statusLine`. It reads Claude Code's documented `context_window` JSON from stdin and prints a color-coded ASCII progress bar.
+- `budget-statusline.py` is configured as Claude Code's `statusLine`. It reads Claude Code's documented `context_window` and `rate_limits` JSON from stdin and prints color-coded ASCII progress bars.
 
 The status line looks like:
 
 ```text
-budget ###########------------- 47% | 94k/200k tokens | ~86k free until ceiling
+budget ctx ########---------- 47% | 94k/200k | ~86k free until ceiling | limit 5h #######--- 72% reset 18:40
 ```
 
-Colors are green under 70%, yellow from 70% to 89%, and red at 90% or higher.
+Colors are green under 70%, yellow from 70% to 89%, and red at 90% or higher. The `ctx` bar is context-window usage. The `limit` bar is Claude's rolling rate-limit usage. If Claude Code does not send `rate_limits` data yet, the status line shows only `ctx`.
 
 ## Important Limits
 
 This is a helper, not a hard scheduler.
 
 - The estimator cannot force Claude to complete exactly N tasks.
-- `plan.md` and `summary.md` are only meaningful if Claude follows the injected guidance or the finalizer creates fallback stubs.
+- `plan.md` and `summary.md` are useful only if Claude follows the injected guidance and writes real content into them.
+- If Claude does not write those files, the finalizer creates basic fallback stubs. These are not intelligent chat summaries; they are markers that budget pressure happened and that the transcript should be reviewed.
 - Token estimates are heuristic. Claude Code's status line is the more accurate live usage display because it uses `context_window.current_usage`.
+- Context usage and Claude account limits are different. Your account limit can be exhausted while `ctx` is almost empty. In that case the rate-limit bar is the relevant one.
+- Claude Code only exposes `rate_limits` after it has received that data from Claude. If `limit` is missing, the script cannot calculate the account limit by itself without making external calls, which this project intentionally does not do.
 
 ## Tuning
 

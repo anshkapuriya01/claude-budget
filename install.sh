@@ -298,9 +298,11 @@ cat > ~/.claude/hooks/budget-statusline.py << 'PYEOF'
 #!/usr/bin/env python3
 import json
 import sys
+from datetime import datetime
 
 BUDGET_CEILING_PCT = 0.90
-BAR_WIDTH = 24
+CTX_BAR_WIDTH = 18
+LIMIT_BAR_WIDTH = 10
 
 RESET = "\033[0m"
 DIM = "\033[2m"
@@ -315,6 +317,42 @@ def fmt(n):
     if n >= 1_000:
         return f"{n / 1_000:.0f}k"
     return str(n)
+
+def bar(pct, width, color):
+    filled = min(width, int(round(max(0.0, min(pct, 1.0)) * width)))
+    return color + ("#" * filled) + RESET + DIM + ("-" * (width - filled)) + RESET
+
+def color_for_pct(pct):
+    if pct < 0.70:
+        return GREEN
+    if pct < BUDGET_CEILING_PCT:
+        return YELLOW
+    return RED
+
+def best_rate_limit(data):
+    limits = data.get("rate_limits") or {}
+    candidates = []
+    for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
+        limit = limits.get(key) or {}
+        used = limit.get("used_percentage")
+        if used is None:
+            continue
+        try:
+            used_float = float(used)
+        except Exception:
+            continue
+        candidates.append((used_float, label, limit.get("resets_at")))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])
+
+def format_reset(epoch_seconds):
+    if not epoch_seconds:
+        return ""
+    try:
+        return " reset " + datetime.fromtimestamp(float(epoch_seconds)).strftime("%H:%M")
+    except Exception:
+        return ""
 
 def main():
     try:
@@ -341,24 +379,30 @@ def main():
     pct = max(0.0, min(pct, 1.0))
     pct_int = int(pct * 100)
 
-    if pct < 0.70:
-        color = GREEN
-    elif pct < BUDGET_CEILING_PCT:
-        color = YELLOW
-    else:
-        color = RED
-
-    filled = min(BAR_WIDTH, int(round(pct * BAR_WIDTH)))
-    bar = color + ("#" * filled) + RESET + DIM + ("-" * (BAR_WIDTH - filled)) + RESET
-
+    ctx_color = color_for_pct(pct)
     free = max(0, ceiling - current)
     free_label = "free until ceiling" if pct < BUDGET_CEILING_PCT else "OVER ceiling"
 
+    parts = [
+        f"ctx {bar(pct, CTX_BAR_WIDTH, ctx_color)} "
+        f"{BOLD}{ctx_color}{pct_int}%{RESET} "
+        f"{DIM}|{RESET} {fmt(current)}/{fmt(ctx_max)} "
+        f"{DIM}|{RESET} {ctx_color}~{fmt(free)} {free_label}{RESET}"
+    ]
+
+    rate = best_rate_limit(data)
+    if rate:
+        used_pct, label, resets_at = rate
+        limit_pct = max(0.0, min(used_pct / 100, 1.0))
+        limit_color = color_for_pct(limit_pct)
+        parts.append(
+            f"limit {label} {bar(limit_pct, LIMIT_BAR_WIDTH, limit_color)} "
+            f"{BOLD}{limit_color}{int(used_pct)}%{RESET}"
+            f"{DIM}{format_reset(resets_at)}{RESET}"
+        )
+
     print(
-        f"budget {bar} "
-        f"{BOLD}{color}{pct_int}%{RESET} "
-        f"{DIM}|{RESET} {fmt(current)}/{fmt(ctx_max)} tokens "
-        f"{DIM}|{RESET} {color}~{fmt(free)} {free_label}{RESET}"
+        f"budget {' | '.join(parts)}"
     )
 
 if __name__ == "__main__":
@@ -405,6 +449,7 @@ if (
         "type": "command",
         "command": statusline_cmd,
         "padding": 0,
+        "refreshInterval": 30,
     }
 
 tmp = path + ".tmp"

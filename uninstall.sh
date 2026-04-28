@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+
 echo "Removing budget hooks..."
 
 rm -f ~/.claude/hooks/budget-estimator.py
@@ -7,12 +8,29 @@ rm -f ~/.claude/hooks/budget-finalizer.py
 rm -f ~/.claude/hooks/budget-statusline.py
 rm -f ~/.claude/budget-flag-*.json
 
-python3 << 'EOF'
-import json, os
+PYTHON_CMD=""
+for candidate in python3 python py; do
+  if command -v "$candidate" >/dev/null 2>&1 \
+      && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info[0] == 3 else 1)' >/dev/null 2>&1; then
+    PYTHON_CMD="$candidate"
+    break
+  fi
+done
+
+if [ -z "$PYTHON_CMD" ]; then
+  echo "Error: Python 3 is required to patch settings.json." >&2
+  exit 1
+fi
+
+"$PYTHON_CMD" << 'PYEOF'
+import json
+import os
+
 path = os.path.expanduser("~/.claude/settings.json")
 if not os.path.exists(path):
     raise SystemExit
-with open(path) as f:
+
+with open(path, encoding="utf-8") as f:
     settings = json.load(f)
 
 hooks = settings.get("hooks", {})
@@ -20,9 +38,11 @@ for event in ("UserPromptSubmit", "Stop"):
     entries = hooks.get(event, [])
     cleaned = []
     for entry in entries:
-        kept = [h for h in entry.get("hooks", [])
-                if "budget-estimator.py" not in h.get("command", "")
-                and "budget-finalizer.py" not in h.get("command", "")]
+        kept = [
+            h for h in entry.get("hooks", [])
+            if "budget-estimator.py" not in h.get("command", "")
+            and "budget-finalizer.py" not in h.get("command", "")
+        ]
         if kept:
             entry["hooks"] = kept
             cleaned.append(entry)
@@ -31,14 +51,14 @@ for event in ("UserPromptSubmit", "Stop"):
     elif event in hooks:
         del hooks[event]
 
-# statusLine: remove only if it points to our budget bar — never clobber a
-# user's custom statusLine.
-sl = settings.get("statusLine")
-if isinstance(sl, dict) and "budget-statusline.py" in sl.get("command", ""):
+statusline = settings.get("statusLine")
+if isinstance(statusline, dict) and "budget-statusline.py" in statusline.get("command", ""):
     del settings["statusLine"]
 
-with open(path + ".tmp", "w") as f:
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2)
-os.replace(path + ".tmp", path)
-print("Done. Restart Claude Code.")
-EOF
+os.replace(tmp, path)
+PYEOF
+
+echo "Done. Restart Claude Code."

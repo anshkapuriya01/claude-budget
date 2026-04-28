@@ -6,6 +6,11 @@ No API calls. No subscription. Pure heuristic estimation, runs entirely on your 
 
 ## Make Sure that WSL is installed in your windows system.
 
+Run powershell as Administrator.
+```powershell
+wsl --install
+```
+
 ## Install
 
 ```bash
